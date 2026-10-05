@@ -47,7 +47,7 @@ tr.total td{font-weight:800;border-top:2px solid #000}
 .quick strong{font-size:13px}
 .alert{font-size:12px;color:#555;margin-top:8px}
 .charts{display:grid;grid-template-columns:1fr 1fr;gap:18px;margin-top:18px}
-.chartbox{height:330px;border:1px solid var(--line);padding:14px;background:#fff}
+.chartbox{height:325px;border:1px solid var(--line);padding:12px 14px 8px;background:#fff}
 .tabs{display:flex;gap:0;margin-top:28px;border-bottom:2px solid #000;flex-wrap:wrap}
 .tab{background:#efefef;border:0;padding:11px 18px;font-weight:800;cursor:pointer;font-size:12px}
 .tab.active{background:#000;color:#fff}
@@ -94,7 +94,7 @@ tr.total td{font-weight:800;border-top:2px solid #000}
       <div class="kpi"><div class="label" id="labExpense">Despesa</div><div class="num" id="kpiExpense">—</div></div>
       <div class="kpi"><div class="label" id="labResult">Resultado</div><div class="num" id="kpiResult">—</div></div>
       <div class="kpi"><div class="label" id="labMargin">Margem %</div><div class="num" id="kpiMargin">—</div></div>
-      <div class="kpi"><div class="label">Caixa disponível · Grupo</div><div class="num" id="kpiCash">—</div></div>
+      <div class="kpi"><div class="label">Caixa disponível · Grupo</div><div class="num" id="kpiCash">—</div><div style="font-size:10px;color:#777;margin-top:6px">Indicador consolidado; não varia por squad.</div></div>
     </div>
 
     <div class="exec-grid">
@@ -210,22 +210,75 @@ function rates(){
   }
   return out;
 }
+function availableDataMonths(){
+  const months=new Set();
+  validRevenueRows().forEach(r=>{
+    const k=monthKey(r.data_emissao);
+    if(k) months.add(k);
+  });
+  validLancRows().forEach(r=>{
+    const k=monthKey(r.data_pagamento);
+    if(k) months.add(k);
+  });
+  cardRows().forEach(r=>{
+    const k=monthKey(r.vencimento_fatura);
+    if(k) months.add(k);
+  });
+  return [...months].sort();
+}
 function closedMonths(){
-  const cfg=RAW.config||[], res=[];
-  for(let i=15;i<=26;i++){
-    const r=cfg[i]; if(!r) continue;
-    if(r[3] && String(r[4]||'').toLowerCase().includes('tem') && String(r[5]||'').toLowerCase()==='fechado' && String(r[6]||'').toLowerCase()==='sim'){
-      res.push(monthKey(r[3]));
+  const cfg=RAW.config||[];
+  const res=[];
+
+  // Find the closing-control header dynamically instead of assuming fixed rows.
+  let headerIndex=-1;
+  for(let i=0;i<cfg.length;i++){
+    const row=(cfg[i]||[]).map(v=>String(v??'').trim().toLowerCase());
+    const hasMonth=row.some(v=>v==='mês' || v==='mes');
+    const hasClose=row.some(v=>v==='fechamento');
+    if(hasMonth && hasClose){ headerIndex=i; break; }
+  }
+
+  if(headerIndex>=0){
+    const header=(cfg[headerIndex]||[]).map(v=>String(v??'').trim().toLowerCase());
+    const idxMonth=header.findIndex(v=>v==='mês' || v==='mes');
+    const idxData=header.findIndex(v=>v.includes('dados no'));
+    const idxClose=header.findIndex(v=>v==='fechamento');
+    const idxUse=header.findIndex(v=>v.includes('usar no dashboard'));
+
+    for(let i=headerIndex+1;i<cfg.length;i++){
+      const r=cfg[i]||[];
+      const rawMonth=r[idxMonth];
+      if(!rawMonth) continue;
+
+      const dataText=idxData>=0 ? String(r[idxData]??'').trim().toLowerCase() : 'tem valores';
+      const closeText=idxClose>=0 ? String(r[idxClose]??'').trim().toLowerCase() : 'fechado';
+      const useText=idxUse>=0 ? String(r[idxUse]??'').trim().toLowerCase() : 'sim';
+
+      const hasValues=!idxData || dataText.includes('tem') || dataText==='';
+      const isClosed=closeText==='fechado' || closeText==='closed';
+      const useDash=idxUse<0 || useText==='sim' || useText==='yes';
+
+      if(hasValues && isClosed && useDash){
+        const k=monthKey(rawMonth);
+        if(k) res.push(k);
+      }
     }
   }
-  return [...new Set(res)].filter(Boolean).sort();
+
+  const unique=[...new Set(res)].sort();
+  if(unique.length) return unique;
+
+  // Fallback for alternate workbook layouts: use months actually present in the valid bases.
+  // This only activates when no closing table can be read.
+  return availableDataMonths();
 }
 function latestDataMonth(){
   let ks=[];
-  rowsToObjects(RAW.receitas).forEach(r=>ks.push(monthKey(r.data_emissao)));
-  rowsToObjects(RAW.lancamentos).forEach(r=>ks.push(monthKey(r.data_pagamento)));
-  rowsToObjects(RAW.fatura_cartao).forEach(r=>ks.push(monthKey(r.vencimento_fatura)));
-  rowsToObjects(RAW.extrato_bancario).forEach(r=>ks.push(monthKey(r.data)));
+  rowsToObjects(RAW.receitas||[]).forEach(r=>ks.push(monthKey(r.data_emissao)));
+  rowsToObjects(RAW.lancamentos||[]).forEach(r=>ks.push(monthKey(r.data_pagamento)));
+  rowsToObjects(RAW.fatura_cartao||[]).forEach(r=>ks.push(monthKey(r.vencimento_fatura)));
+  rowsToObjects(RAW.extrato_bancario||[]).forEach(r=>ks.push(monthKey(r.data)));
   return ks.filter(Boolean).sort().pop()||'';
 }
 function validRevenueRows(){
@@ -258,10 +311,23 @@ function monthMetrics(squad,key){
   return {rev,exp,result:rev-exp,margin:rev?((rev-exp)/rev):0};
 }
 function ytdMetrics(squad,key){
-  const y=key.slice(0,4), months=closedMonths().filter(k=>k.startsWith(y)&&k<=key);
-  return months.reduce((a,k)=>{
-    const m=monthMetrics(squad,k); a.rev+=m.rev;a.exp+=m.exp;a.result+=m.result;return a;
+  const y=key.slice(0,4);
+  let months=closedMonths().filter(k=>k.startsWith(y)&&k<=key);
+  if(!months.length){
+    months=availableDataMonths().filter(k=>k.startsWith(y)&&k<=key);
+  }
+  const out=months.reduce((a,k)=>{
+    const m=monthMetrics(squad,k);
+    a.rev+=m.rev;
+    a.exp+=m.exp;
+    a.result+=m.result;
+    return a;
   },{rev:0,exp:0,result:0,margin:0});
+
+  // Margem YTD deve ser calculada sobre os totais acumulados,
+  // e não como média das margens mensais.
+  out.margin = out.rev ? out.result/out.rev : 0;
+  return out;
 }
 function finishMargin(x){x.margin=x.rev?x.result/x.rev:0;return x}
 function scopeMonth(scope,key){
@@ -298,16 +364,21 @@ function squadRows(key){
   return rows;
 }
 function renderSquads(key,scope){
-  const body=$('squadTable').querySelector('tbody'); body.innerHTML='';
-  squadRows(key).forEach(r=>{
+  const body=$('squadTable').querySelector('tbody'); 
+  body.innerHTML='';
+  const allowed=squadsForScope(scope);
+  const rows=squadRows(key).filter(r=>allowed.includes(r.s));
+  rows.forEach(r=>{
     const tr=document.createElement('tr');
-    if(squadsForScope(scope).includes(r.s)) tr.style.fontWeight='700';
     const cells=[r.s,money(r.rev),money(r.exp),money(r.result),pct(r.margin),r.rank,r.trend];
-    cells.forEach((v,i)=>{const td=document.createElement('td');td.textContent=v;
+    cells.forEach((v,i)=>{
+      const td=document.createElement('td');
+      td.textContent=v;
       if((i===3||i===4) && (i===3?r.result:r.margin)>0) td.classList.add('positive');
       if((i===3||i===4) && (i===3?r.result:r.margin)<0) td.classList.add('negative');
       tr.appendChild(td);
-    }); body.appendChild(tr);
+    });
+    body.appendChild(tr);
   });
 }
 function insight(scope,key){
@@ -329,20 +400,167 @@ function chartSeries(scope,key){
 }
 function drawCharts(scope,key){
   const s=chartSeries(scope,key);
-  if(trendChart) trendChart.destroy(); if(marginChart) marginChart.destroy();
+  const allowed=squadsForScope(scope);
+  const sr=squadRows(key).filter(x=>allowed.includes(x.s));
+
+  if(trendChart) trendChart.destroy();
+  if(marginChart) marginChart.destroy();
+
+  const valueLabelPlugin = {
+    id:'valueLabelPlugin',
+    afterDatasetsDraw(chart,args,opts){
+      const {ctx}=chart;
+      ctx.save();
+      ctx.font='11px Arial';
+      ctx.textAlign='center';
+      ctx.textBaseline='middle';
+
+      chart.data.datasets.forEach((dataset,di)=>{
+        const meta=chart.getDatasetMeta(di);
+        meta.data.forEach((el,i)=>{
+          const raw=Number(dataset.data[i]);
+          if(!Number.isFinite(raw)) return;
+          const pos=el.tooltipPosition();
+          const isNeg=raw<0;
+          ctx.fillStyle=isNeg ? '#d00000' : '#111111';
+
+          if(chart.config.type==='line'){
+            ctx.fillText(raw.toFixed(1).replace('.',',')+'%', pos.x, pos.y + (isNeg?15:-14));
+          }else{
+            const y=pos.y + (isNeg?16:-12);
+            const txt=(isNeg?'(':'')+Math.abs(raw).toFixed(1).replace('.',',')+'%'+(isNeg?')':'');
+            ctx.fillText(txt,pos.x,y);
+          }
+        });
+      });
+      ctx.restore();
+    }
+  };
+
+  const trendVals=s.map(x=>x.margin*100);
+  const trendMinVal=Math.min(0,...trendVals);
+  const trendMaxVal=Math.max(0,...trendVals);
+  const trendPad=Math.max(2,(trendMaxVal-trendMinVal)*0.12);
+  const trendYMin=trendMinVal<0 ? Math.floor((trendMinVal-trendPad)/5)*5 : 0;
+  const trendYMax=Math.ceil((trendMaxVal+trendPad)/5)*5;
+
   trendChart=new Chart($('trendChart'),{
     type:'line',
-    data:{labels:s.map(x=>x.label),datasets:[
-      {label:'Faturamento',data:s.map(x=>x.rev),borderColor:'#111',backgroundColor:'#111',tension:.25},
-      {label:'Resultado',data:s.map(x=>x.result),borderColor:'#11823b',backgroundColor:'#11823b',tension:.25}
-    ]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'Evolução mensal · '+scope},legend:{position:'bottom'}},scales:{y:{ticks:{callback:v=>'R$ '+Intl.NumberFormat('pt-BR',{notation:'compact'}).format(v)}}}}
+    data:{
+      labels:s.map(x=>x.label.toLowerCase()),
+      datasets:[{
+        label:'Margem % · escopo selecionado',
+        data:s.map(x=>x.margin*100),
+        borderColor:'#666666',
+        backgroundColor:'#666666',
+        pointBackgroundColor:'#666666',
+        pointBorderColor:'#666666',
+        pointRadius:2,
+        pointHoverRadius:4,
+        borderWidth:4,
+        tension:.28,
+        fill:false
+      }]
+    },
+    plugins:[valueLabelPlugin],
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      interaction:{mode:'index',intersect:false},
+      plugins:{
+        title:{display:false},
+        legend:{
+          display:true,
+          position:'bottom',
+          labels:{usePointStyle:true,pointStyle:'line',boxWidth:28,color:'#333',font:{family:'Arial',size:11}}
+        },
+        tooltip:{
+          callbacks:{label:c=>' Margem: '+Number(c.raw).toFixed(1).replace('.',',')+'%'}
+        }
+      },
+      layout:{padding:{top:18,right:16,bottom:2,left:4}},
+      scales:{
+        x:{
+          grid:{display:true,color:'#d6d6d6',borderDash:[4,4]},
+          ticks:{color:'#222',font:{family:'Arial',size:11}}
+        },
+        y:{
+          min:trendYMin,
+          max:trendYMax,
+          grid:{
+            display:true,
+            color:ctx => Number(ctx.tick.value)===0 ? '#000000' : '#d6d6d6',
+            lineWidth:ctx => Number(ctx.tick.value)===0 ? 1.2 : 1,
+            borderDash:ctx => Number(ctx.tick.value)===0 ? [] : [4,4]
+          },
+          ticks:{
+            color:'#222',
+            font:{family:'Arial',size:11},
+            callback:v=>Number(v).toFixed(0)+'%'
+          }
+        }
+      }
+    }
   });
-  const sr=squadRows(key);
+
+  const vals=sr.map(x=>x.margin*100);
+  const minVal=Math.min(0,...vals);
+  const maxVal=Math.max(0,...vals);
+  const yMin=Math.floor((minVal-5)/10)*10;
+  const yMax=Math.ceil((maxVal+5)/10)*10;
+
   marginChart=new Chart($('marginChart'),{
     type:'bar',
-    data:{labels:sr.map(x=>x.s),datasets:[{label:'Margem YTD %',data:sr.map(x=>x.margin*100),backgroundColor:sr.map(x=>x.margin>=0?'#222':'#c62828')}]},
-    options:{responsive:true,maintainAspectRatio:false,plugins:{title:{display:true,text:'Margem YTD por squad'},legend:{display:false}},scales:{y:{ticks:{callback:v=>v.toFixed(0)+'%'}}}}
+    data:{
+      labels:sr.map(x=>x.s),
+      datasets:[{
+        label:'Margem % YTD · escopo selecionado',
+        data:vals,
+        backgroundColor:sr.map(()=> '#686868'),
+        borderColor:sr.map(()=> '#686868'),
+        borderWidth:0,
+        barPercentage:.55,
+        categoryPercentage:.72
+      }]
+    },
+    plugins:[valueLabelPlugin],
+    options:{
+      responsive:true,
+      maintainAspectRatio:false,
+      plugins:{
+        title:{display:false},
+        legend:{
+          display:true,
+          position:'bottom',
+          labels:{usePointStyle:true,pointStyle:'rect',boxWidth:8,color:'#333',font:{family:'Arial',size:11}}
+        },
+        tooltip:{
+          callbacks:{label:c=>' Margem YTD: '+Number(c.raw).toFixed(1).replace('.',',')+'%'}
+        }
+      },
+      layout:{padding:{top:18,right:16,bottom:2,left:4}},
+      scales:{
+        x:{
+          grid:{display:true,color:'#d6d6d6',borderDash:[4,4]},
+          ticks:{color:'#111',font:{family:'Arial',size:11,weight:'bold'}}
+        },
+        y:{
+          min:yMin,
+          max:yMax,
+          grid:{
+            display:true,
+            color:ctx => Number(ctx.tick.value)===0 ? '#000000' : '#d6d6d6',
+            lineWidth:ctx => Number(ctx.tick.value)===0 ? 1.2 : 1,
+            borderDash:ctx => Number(ctx.tick.value)===0 ? [] : [4,4]
+          },
+          ticks:{
+            color:'#222',
+            font:{family:'Arial',size:11},
+            callback:v=>Number(v).toFixed(0)+'%'
+          }
+        }
+      }
+    }
   });
 }
 function monthlyHolding(key){
@@ -439,28 +657,75 @@ function render(){
   $('quickTitle').textContent='INSIGHTS DO '+scope.toUpperCase();
   $('quickText').textContent=insight(scope,key);
   const latest=latestDataMonth(); $('partialAlert').textContent=latest>closedMonths().at(-1)?`Atenção: há dados parciais em ${monthLabel(latest)}, ainda não incluídos nos KPIs oficiais.`:'Todos os meses com dados estão marcados como Fechado.';
-  renderSquads(key,scope); drawCharts(scope,key); renderStatements(key);
+  renderSquads(key,scope);
+  const checkRows=squadRows(key);
+  console.table(checkRows.map(r=>({Squad:r.s,'Margem YTD':r.margin,'Resultado YTD':r.result})));
+  drawCharts(scope,key);
+  renderStatements(key);
 }
 function sheetRows(workbook,name){
-  const ws=workbook.Sheets[name]; if(!ws) return null;
+  const ws=workbook.Sheets[name]; 
+  if(!ws) return null;
   return XLSX.utils.sheet_to_json(ws,{header:1,raw:true,defval:null});
+}
+function findSheetName(workbook, wanted){
+  const norm=s=>String(s||'')
+    .normalize('NFD').replace(/[\u0300-\u036f]/g,'')
+    .trim().toLowerCase();
+  const target=norm(wanted);
+
+  // Exact normalized name first.
+  let found=workbook.SheetNames.find(n=>norm(n)===target);
+  if(found) return found;
+
+  // Config may have descriptive suffixes, e.g. "Config >add inputs".
+  if(target==='config'){
+    found=workbook.SheetNames.find(n=>norm(n).startsWith('config'));
+    if(found) return found;
+  }
+  return null;
 }
 function loadWorkbook(file){
   const reader=new FileReader();
   reader.onload=e=>{
     const wb2=XLSX.read(e.target.result,{type:'array',cellDates:false});
-    const names=['receitas','lancamentos','fatura_cartao','extrato_bancario','headcount','Config'];
-    const next={}; let ok=true;
-    names.forEach(n=>{const r=sheetRows(wb2,n); if(!r) ok=false; else next[n==='Config'?'config':n]=r});
-    if(!ok){alert('O arquivo não contém todas as abas esperadas. Use o arquivo do modelo Meridiano.');return;}
-    RAW=next; populateFilters(); render();
+
+    const required=['receitas','lancamentos','fatura_cartao','extrato_bancario','headcount'];
+    const next={};
+    let missing=[];
+
+    required.forEach(n=>{
+      const actual=findSheetName(wb2,n);
+      if(!actual){ missing.push(n); return; }
+      next[n]=sheetRows(wb2,actual);
+    });
+
+    const configName=findSheetName(wb2,'Config');
+    if(configName) next.config=sheetRows(wb2,configName);
+    else next.config=[];
+
+    if(missing.length){
+      alert('O arquivo não contém todas as abas-base esperadas: '+missing.join(', ')+'.');
+      return;
+    }
+
+    RAW=next;
+    populateFilters();
+
+    const closed=closedMonths();
+    if(!closed.length){
+      alert('Não foi possível identificar meses válidos para o dashboard.');
+      return;
+    }
+
+    render();
     alert('Dashboard atualizado com os dados do Excel selecionado.');
   };
   reader.readAsArrayBuffer(file);
 }
 $('excelInput').addEventListener('change',e=>{if(e.target.files[0])loadWorkbook(e.target.files[0])});
 $('resetBtn').addEventListener('click',()=>{RAW=JSON.parse(JSON.stringify(SNAPSHOT));populateFilters();render()});
-$('scopeSelect').addEventListener('change',render); $('monthSelect').addEventListener('change',render);
+$('scopeSelect').addEventListener('change',()=>render()); $('monthSelect').addEventListener('change',()=>render());
 document.querySelectorAll('.tab').forEach(b=>b.addEventListener('click',()=>{
   document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));document.querySelectorAll('.tabpane').forEach(x=>x.classList.remove('active'));
   b.classList.add('active');$(b.dataset.tab).classList.add('active');
